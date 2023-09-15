@@ -40,11 +40,25 @@ var ignoreHeaders = []string{
 	"dkim-", "from:", "return-path:", "to:", "sender:", "list-owner:",
 }
 
+func fromAddress() *string {
+	return aws.String("Mail Man <mailman@mlctrez.com>")
+}
+
+func toAddress() *string {
+	return aws.String("Matt Crawford <mlctrez@gmail.com>")
+}
+
 func (m messagePart) write(b *bytes.Buffer) {
 
 	firstLower := strings.ToLower(m.first)
 	for _, header := range ignoreHeaders {
 		if strings.HasPrefix(firstLower, header) {
+			switch header {
+			case "from:":
+				b.WriteString(fmt.Sprintf("From: %s\r\n", *fromAddress()))
+			case "to:":
+				b.WriteString(fmt.Sprintf("From: %s\r\n", *toAddress()))
+			}
 			return
 		}
 	}
@@ -57,7 +71,8 @@ func (m messagePart) write(b *bytes.Buffer) {
 	}
 }
 
-func processMessage(reader io.Reader) *sesTypes.RawMessage {
+func processMessage(reader io.ReadCloser) *sesTypes.RawMessage {
+	defer func() { _ = reader.Close() }()
 	buf := &bytes.Buffer{}
 	scanner := bufio.NewScanner(reader)
 	var mp *messagePart
@@ -100,16 +115,16 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 			return nil, nil
 		}
 
-		_, err = sesClient.SendRawEmail(context.TODO(), &ses.SendRawEmailInput{
+		_, err = sesClient.SendRawEmail(ctx, &ses.SendRawEmailInput{
 			RawMessage:   processMessage(getObjectOutput.Body),
-			Source:       aws.String("Mail Man <mailman@mlctrez.com>"),
-			Destinations: []string{"mlctrez@gmail.com"},
+			Source:       fromAddress(),
+			Destinations: []string{*toAddress()},
 		})
 		if err != nil {
-			psc := s3.NewPresignClient(s3Client, s3.WithPresignExpires(time.Second*604800))
-			psReq, errPs := psc.PresignGetObject(ctx, getObjectInput)
-			if errPs != nil {
-				handleError(sesClient, "go email admin", fmt.Sprintf("PresignGetObject err : %s", errPs))
+			psClient := s3.NewPresignClient(s3Client, s3.WithPresignExpires(time.Second*604800))
+			psReq, psErr := psClient.PresignGetObject(ctx, getObjectInput)
+			if psErr != nil {
+				handleError(sesClient, "go email admin", fmt.Sprintf("PresignGetObject err : %s", psErr))
 				break
 			}
 			handleError(sesClient, "go email admin", fmt.Sprintf("RawEmail %s \r\nSendRawEmail err : %s", psReq.URL, err))
@@ -133,8 +148,8 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 
 func handleError(sesClient *ses.Client, subject, message string) {
 	_, _ = sesClient.SendEmail(context.Background(), &ses.SendEmailInput{
-		Source:      aws.String("Mail Man <mailman@mlctrez.com>"),
-		Destination: &sesTypes.Destination{ToAddresses: []string{"mlctrez@gmail.com"}},
+		Source:      fromAddress(),
+		Destination: &sesTypes.Destination{ToAddresses: []string{*toAddress()}},
 		Message: &sesTypes.Message{
 			Body:    &sesTypes.Body{Text: content(message)},
 			Subject: content(subject),
