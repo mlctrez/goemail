@@ -37,13 +37,14 @@ type messagePart struct {
 }
 
 var ignoreHeaders = []string{
-	"DKIM-", "From:", "Return-Path:", "To:",
+	"dkim-", "from:", "return-path:", "to:", "sender:", "list-owner:",
 }
 
 func (m messagePart) write(b *bytes.Buffer) {
 
+	firstLower := strings.ToLower(m.first)
 	for _, header := range ignoreHeaders {
-		if strings.HasPrefix(m.first, header) {
+		if strings.HasPrefix(firstLower, header) {
 			return
 		}
 	}
