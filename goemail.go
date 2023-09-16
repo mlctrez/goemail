@@ -57,7 +57,7 @@ func (m messagePart) write(b *bytes.Buffer) {
 			case "from:":
 				b.WriteString(fmt.Sprintf("From: %s\r\n", *fromAddress()))
 			case "to:":
-				b.WriteString(fmt.Sprintf("From: %s\r\n", *toAddress()))
+				b.WriteString(fmt.Sprintf("To: %s\r\n", *toAddress()))
 			}
 			return
 		}
@@ -79,7 +79,7 @@ func processMessage(reader io.ReadCloser) *sesTypes.RawMessage {
 
 	for scanner.Scan() {
 		l := scanner.Text()
-		if strings.HasPrefix(l, " ") {
+		if strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t") {
 			mp.additional = append(mp.additional, l)
 		} else {
 			if mp != nil {
