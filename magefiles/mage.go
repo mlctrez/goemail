@@ -180,6 +180,8 @@ func (bc *buildContext) ensureRole() (err error) {
 
 	// customize additional roles for the lambda here
 	policies := []string{
+		"arn:aws:iam::aws:policy/AmazonS3FullAccess",
+		"arn:aws:iam::aws:policy/AmazonSESFullAccess",
 		"arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
 	}
 	for _, policyArn := range policies {
