@@ -37,10 +37,10 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 
 	from := os.Getenv("EMAIL_FROM")
 	to := os.Getenv("EMAIL_TO")
+	bucket := aws.String(os.Getenv("EMAIL_BUCKET"))
 
 	ec := sesutil.EmailContext(sesClient, from, to)
 
-	bucket := aws.String("mlctrez-inbound-email")
 	for _, record := range event.Records {
 		mail := record.SES.Mail
 
