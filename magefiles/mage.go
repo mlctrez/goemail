@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -38,7 +39,8 @@ func Delete(ctx context.Context) error {
 
 func (bc *buildContext) deploy() error {
 	return steps(bc.envInit, bc.awsInit, bc.buildCode,
-		bc.ensureRole, bc.ensureFunction, bc.updateFunctionCode)
+		bc.ensureRole, bc.ensureFunction,
+		bc.updateFunctionCode, bc.updateFunctionConfig)
 }
 
 func (bc *buildContext) delete() error {
@@ -282,4 +284,41 @@ func (bc *buildContext) deleteRole() (err error) {
 		return err
 	})
 
+}
+
+func (bc *buildContext) updateFunctionConfig() (err error) {
+	var envBytes []byte
+	if envBytes, err = os.ReadFile(".env"); err != nil {
+		return errors.New("missing .env file with lines for EMAIL_FROM and EMAIL_TO")
+	}
+	envMap := make(map[string]string)
+	scanner := bufio.NewScanner(bytes.NewReader(envBytes))
+	for scanner.Scan() {
+		l := scanner.Text()
+		if strings.Contains(l, "=") {
+			parts := strings.SplitN(l, "=", 2)
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	fci := &lambda.UpdateFunctionConfigurationInput{
+		FunctionName: &bc.fnName,
+		Environment:  &lamTypes.Environment{Variables: envMap},
+	}
+
+	waitForUpdate := 10
+	for waitForUpdate > 0 {
+		_, err = bc.lamClient.UpdateFunctionConfiguration(bc.ctx, fci)
+		if err != nil {
+			var rce *lamTypes.ResourceConflictException
+			if errors.As(err, &rce) {
+				waitForUpdate--
+				time.Sleep(time.Second)
+				continue
+			}
+			return err
+		}
+		waitForUpdate = 0
+	}
+	return nil
 }
