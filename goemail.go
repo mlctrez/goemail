@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -16,6 +18,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ses"
 	"github.com/mlctrez/goemail/sesutil"
 )
+
+type s3API interface {
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
+}
 
 func main() {
 	lambda.Start(Handle)
@@ -44,6 +52,57 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 
 	for _, record := range event.Records {
 		mail := record.SES.Mail
+
+		blocks := getBlocks(ctx, s3Client, bucket)
+		isBlocked := false
+		for _, dest := range mail.Destination {
+			if _, ok := blocks[dest]; ok {
+				isBlocked = true
+				break
+			}
+		}
+
+		if isBlocked {
+			log.Printf("Blocking email to %v", mail.Destination)
+			_, errDel := s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+				Bucket: bucket,
+				Delete: &s3Types.Delete{
+					Objects: []s3Types.ObjectIdentifier{{Key: aws.String(mail.MessageID)}},
+				},
+			})
+			if errDel != nil {
+				log.Printf("s3Client.DeleteObjects error for blocked mail %s: %s", mail.MessageID, errDel)
+			}
+			continue
+		}
+
+		if strings.ToLower(mail.CommonHeaders.Subject) == "block" {
+			isFromOwner := false
+			if mail.Source == to {
+				isFromOwner = true
+			}
+			if isFromOwner {
+				newBlocks := make([]string, 0)
+				for _, dest := range mail.Destination {
+					if dest != to {
+						newBlocks = append(newBlocks, dest)
+					}
+				}
+				if len(newBlocks) > 0 {
+					log.Printf("Adding to block list: %v", newBlocks)
+					updateBlocks(ctx, s3Client, bucket, blocks, newBlocks)
+					ec.Send(fmt.Sprintf("Added to block list: %v", newBlocks))
+					// Also delete the command email
+					_, _ = s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+						Bucket: bucket,
+						Delete: &s3Types.Delete{
+							Objects: []s3Types.ObjectIdentifier{{Key: aws.String(mail.MessageID)}},
+						},
+					})
+					continue
+				}
+			}
+		}
 
 		getObjectInput := &s3.GetObjectInput{Bucket: bucket, Key: aws.String(mail.MessageID)}
 
@@ -86,4 +145,48 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 	}
 
 	return nil, nil
+}
+
+const blocksKey = "blocks.txt"
+
+func getBlocks(ctx context.Context, client s3API, bucket *string) map[string]struct{} {
+	res := make(map[string]struct{})
+	output, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: bucket,
+		Key:    aws.String(blocksKey),
+	})
+	if err != nil {
+		return res
+	}
+	defer func() { _ = output.Body.Close() }()
+	body, err := io.ReadAll(output.Body)
+	if err != nil {
+		return res
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			res[line] = struct{}{}
+		}
+	}
+	return res
+}
+
+func updateBlocks(ctx context.Context, client s3API, bucket *string, current map[string]struct{}, news []string) {
+	for _, n := range news {
+		current[strings.TrimSpace(n)] = struct{}{}
+	}
+	var sb strings.Builder
+	for k := range current {
+		sb.WriteString(k)
+		sb.WriteString("\n")
+	}
+	_, err := client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: bucket,
+		Key:    aws.String(blocksKey),
+		Body:   strings.NewReader(sb.String()),
+	})
+	if err != nil {
+		log.Printf("Error updating blocks.txt: %s", err)
+	}
 }
