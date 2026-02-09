@@ -4,9 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	sesTypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
 	"io"
 	"strings"
+
+	sesTypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
 )
 
 type part struct {
@@ -20,15 +21,32 @@ func Process(reader io.ReadCloser, from, to string) *sesTypes.RawMessage {
 	scanner := bufio.NewScanner(reader)
 	var mp *part
 
+	headerMode := true
 	for scanner.Scan() {
 		l := scanner.Text()
-		if strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t") {
-			mp.additional = append(mp.additional, l)
-		} else {
+		if headerMode && l == "" {
+			headerMode = false
 			if mp != nil {
 				mp.write(buf, from, to)
+				mp = nil
 			}
-			mp = &part{first: l}
+			buf.WriteString("\r\n")
+			continue
+		}
+
+		if headerMode {
+			if strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t") {
+				if mp != nil {
+					mp.additional = append(mp.additional, l)
+				}
+			} else {
+				if mp != nil {
+					mp.write(buf, from, to)
+				}
+				mp = &part{first: l}
+			}
+		} else {
+			buf.WriteString(l + "\r\n")
 		}
 	}
 	if mp != nil {
@@ -54,8 +72,16 @@ func (m *part) write(b *bytes.Buffer, from, to string) {
 			switch header {
 			case "from:":
 				writeLine(fmt.Sprintf("From: %s", from))
+				writeLine(fmt.Sprintf("X-Original-From: %s", strings.TrimSpace(m.first[len("from:"):])))
+				for _, s := range m.additional {
+					writeLine(fmt.Sprintf("X-Original-From-Cont: %s", s))
+				}
 			case "to:":
 				writeLine(fmt.Sprintf("To: %s", to))
+				writeLine(fmt.Sprintf("X-Original-To: %s", strings.TrimSpace(m.first[len("to:"):])))
+				for _, s := range m.additional {
+					writeLine(fmt.Sprintf("X-Original-To-Cont: %s", s))
+				}
 			}
 			return
 		}

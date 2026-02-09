@@ -7,12 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/iam"
-	iamTypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
-	"github.com/aws/aws-sdk-go-v2/service/lambda"
-	lamTypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"io"
 	"os"
 	"os/exec"
@@ -21,6 +15,13 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	iamTypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	lamTypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 )
 
 var Default = Deploy

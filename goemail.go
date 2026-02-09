@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"time"
+
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -11,9 +15,6 @@ import (
 	s3Types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/ses"
 	"github.com/mlctrez/goemail/sesutil"
-	"log"
-	"os"
-	"time"
 )
 
 func main() {
@@ -31,7 +32,7 @@ func clients(ctx context.Context) (s3Client *s3.Client, sesClient *ses.Client) {
 func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interface{}, err error) {
 	s3Client, sesClient := clients(ctx)
 
-	if event.Records == nil || len(event.Records) == 0 {
+	if len(event.Records) == 0 {
 		return nil, nil
 	}
 
@@ -49,8 +50,9 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 		var getObjectOutput *s3.GetObjectOutput
 		getObjectOutput, err = s3Client.GetObject(ctx, getObjectInput)
 		if err != nil {
+			log.Printf("s3Client.GetObject error for %s: %s", mail.MessageID, err)
 			ec.Send(fmt.Sprintf("s3Client.GetObject err : %s", err))
-			return nil, nil
+			continue
 		}
 
 		_, err = sesClient.SendRawEmail(ctx, &ses.SendRawEmailInput{
@@ -59,14 +61,15 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 			Destinations: []string{to},
 		})
 		if err != nil {
+			log.Printf("sesClient.SendRawEmail error for %s: %s", mail.MessageID, err)
 			psClient := s3.NewPresignClient(s3Client, s3.WithPresignExpires(time.Second*604800))
 			psReq, psErr := psClient.PresignGetObject(ctx, getObjectInput)
 			if psErr != nil {
 				ec.Send(fmt.Sprintf("PresignGetObject err : %s", psErr))
-				break
+				continue
 			}
 			ec.Send(fmt.Sprintf("RawEmail %s \r\nSendRawEmail err : %s", psReq.URL, err))
-			break
+			continue
 		} else {
 			_, errDel := s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 				Bucket: bucket,
@@ -75,8 +78,9 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 				},
 			})
 			if errDel != nil {
+				log.Printf("s3Client.DeleteObjects error for %s: %s", mail.MessageID, errDel)
 				ec.Send(fmt.Sprintf("DeleteObjects err : %s", errDel))
-				break
+				continue
 			}
 		}
 	}
