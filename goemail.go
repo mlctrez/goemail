@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/mail"
 	"os"
 	"strings"
 	"time"
@@ -23,6 +24,14 @@ type s3API interface {
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	DeleteObjects(ctx context.Context, params *s3.DeleteObjectsInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
+}
+
+func extractEmail(address string) string {
+	addr, err := mail.ParseAddress(address)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(address))
+	}
+	return strings.ToLower(addr.Address)
 }
 
 func main() {
@@ -45,47 +54,48 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 	}
 
 	from := os.Getenv("EMAIL_FROM")
-	to := os.Getenv("EMAIL_TO")
+	to := extractEmail(os.Getenv("EMAIL_TO"))
 	bucket := aws.String(os.Getenv("EMAIL_BUCKET"))
 
 	ec := sesutil.EmailContext(sesClient, from, to)
+	blocks := getBlocks(ctx, s3Client, bucket)
 
 	for _, record := range event.Records {
-		mail := record.SES.Mail
+		sesMail := record.SES.Mail
 
-		blocks := getBlocks(ctx, s3Client, bucket)
 		isBlocked := false
-		for _, dest := range mail.Destination {
-			if _, ok := blocks[dest]; ok {
+		for _, dest := range sesMail.Destination {
+			if _, ok := blocks[extractEmail(dest)]; ok {
 				isBlocked = true
 				break
 			}
 		}
 
 		if isBlocked {
-			log.Printf("Blocking email to %v", mail.Destination)
+			log.Printf("Blocking email to %v", sesMail.Destination)
 			_, errDel := s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 				Bucket: bucket,
 				Delete: &s3Types.Delete{
-					Objects: []s3Types.ObjectIdentifier{{Key: aws.String(mail.MessageID)}},
+					Objects: []s3Types.ObjectIdentifier{{Key: aws.String(sesMail.MessageID)}},
 				},
 			})
 			if errDel != nil {
-				log.Printf("s3Client.DeleteObjects error for blocked mail %s: %s", mail.MessageID, errDel)
+				log.Printf("s3Client.DeleteObjects error for blocked sesMail %s: %s", sesMail.MessageID, errDel)
 			}
 			continue
 		}
 
-		if strings.ToLower(mail.CommonHeaders.Subject) == "block" {
+		if strings.ToLower(sesMail.CommonHeaders.Subject) == "block" {
 			isFromOwner := false
-			if mail.Source == to {
+			if extractEmail(sesMail.Source) == to {
 				isFromOwner = true
 			}
 			if isFromOwner {
 				newBlocks := make([]string, 0)
-				for _, dest := range mail.Destination {
-					if dest != to {
-						newBlocks = append(newBlocks, dest)
+				for _, dest := range sesMail.Destination {
+					destEmail := extractEmail(dest)
+					if destEmail != to {
+						newBlocks = append(newBlocks, destEmail)
 					}
 				}
 				if len(newBlocks) > 0 {
@@ -96,7 +106,7 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 					_, _ = s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 						Bucket: bucket,
 						Delete: &s3Types.Delete{
-							Objects: []s3Types.ObjectIdentifier{{Key: aws.String(mail.MessageID)}},
+							Objects: []s3Types.ObjectIdentifier{{Key: aws.String(sesMail.MessageID)}},
 						},
 					})
 					continue
@@ -104,12 +114,12 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 			}
 		}
 
-		getObjectInput := &s3.GetObjectInput{Bucket: bucket, Key: aws.String(mail.MessageID)}
+		getObjectInput := &s3.GetObjectInput{Bucket: bucket, Key: aws.String(sesMail.MessageID)}
 
 		var getObjectOutput *s3.GetObjectOutput
 		getObjectOutput, err = s3Client.GetObject(ctx, getObjectInput)
 		if err != nil {
-			log.Printf("s3Client.GetObject error for %s: %s", mail.MessageID, err)
+			log.Printf("s3Client.GetObject error for %s: %s", sesMail.MessageID, err)
 			ec.Send(fmt.Sprintf("s3Client.GetObject err : %s", err))
 			continue
 		}
@@ -120,7 +130,7 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 			Destinations: []string{to},
 		})
 		if err != nil {
-			log.Printf("sesClient.SendRawEmail error for %s: %s", mail.MessageID, err)
+			log.Printf("sesClient.SendRawEmail error for %s: %s", sesMail.MessageID, err)
 			psClient := s3.NewPresignClient(s3Client, s3.WithPresignExpires(time.Second*604800))
 			psReq, psErr := psClient.PresignGetObject(ctx, getObjectInput)
 			if psErr != nil {
@@ -137,7 +147,7 @@ func Handle(ctx context.Context, event events.SimpleEmailEvent) (response interf
 				},
 			})
 			if errDel != nil {
-				log.Printf("s3Client.DeleteObjects error for %s: %s", mail.MessageID, errDel)
+				log.Printf("s3Client.DeleteObjects error for %s: %s", sesMail.MessageID, errDel)
 				ec.Send(fmt.Sprintf("DeleteObjects err : %s", errDel))
 				continue
 			}
@@ -164,7 +174,7 @@ func getBlocks(ctx context.Context, client s3API, bucket *string) map[string]str
 		return res
 	}
 	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
+		line = extractEmail(line)
 		if line != "" {
 			res[line] = struct{}{}
 		}
@@ -174,7 +184,7 @@ func getBlocks(ctx context.Context, client s3API, bucket *string) map[string]str
 
 func updateBlocks(ctx context.Context, client s3API, bucket *string, current map[string]struct{}, news []string) {
 	for _, n := range news {
-		current[strings.TrimSpace(n)] = struct{}{}
+		current[extractEmail(n)] = struct{}{}
 	}
 	var sb strings.Builder
 	for k := range current {

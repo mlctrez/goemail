@@ -46,6 +46,25 @@ func TestGetBlocks(t *testing.T) {
 	}
 }
 
+func TestExtractEmail(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"shady@mlctrez.com", "shady@mlctrez.com"},
+		{" Matt <matt@mlctrez.com> ", "matt@mlctrez.com"},
+		{"<MATT@MLCTREZ.COM>", "matt@mlctrez.com"},
+		{"Invalid Address", "invalid address"},
+	}
+
+	for _, tc := range tests {
+		got := extractEmail(tc.input)
+		if got != tc.expected {
+			t.Errorf("extractEmail(%q) = %q; want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
 func TestUpdateBlocks(t *testing.T) {
 	var putBody string
 	mock := &mockS3{
